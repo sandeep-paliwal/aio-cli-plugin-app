@@ -10,7 +10,7 @@ Create, Build and Deploy Adobe I/O Apps
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Codecov Coverage](https://img.shields.io/codecov/c/github/adobe/aio-cli-plugin-app/master.svg?style=flat-square)](https://codecov.io/gh/adobe/aio-cli-plugin-app/)
 
-
+ 
 <!-- toc -->
 * [Usage](#usage)
 * [Commands](#commands)
@@ -361,7 +361,7 @@ Build and deploy an Adobe I/O App
 ```
 Build and deploy an Adobe I/O App
 
-This will always force a rebuild unless --no-force-build is set. 
+This will always force a rebuild unless --no-force-build is set.
 
 
 USAGE
