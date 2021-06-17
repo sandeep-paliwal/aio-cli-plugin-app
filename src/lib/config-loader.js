@@ -27,8 +27,14 @@ const {
   defaultJSCacheDuration,
   defaultCSSCacheDuration,
   defaultImageCacheDuration,
-  AIO_CONFIG_IMS_ORG_ID
+  AIO_CONFIG_IMS_ORG_ID,
+  stageAppHostname
 } = require('./defaults')
+
+const {
+  getCliEnv, /* function */
+  STAGE_ENV /* string */
+} = require('@adobe/aio-lib-env')
 
 /**
  * loading config returns following object (this config is internal, not user facing):
@@ -164,10 +170,16 @@ module.exports = () => {
   config.ow.package = `${config.app.name}-${config.app.version}`
   // S3 static files deployment config
   config.s3.folder = config.ow.namespace // this becomes the root only /
-  config.s3.tvmUrl = userConfig.app.tvmurl || defaultTvmUrl
+  // Legacy applications set the defaultTvmUrl in .env, so we need to ignore it to not
+  // consider it as custom. The default will be set downstream by aio-lib-core-tvm.
+  if (userConfig.app.tvmurl !== defaultTvmUrl) {
+    config.s3.tvmUrl = userConfig.app.tvmurl
+  }
   // set hostname for backend actions && UI
-  config.app.defaultHostname = defaultAppHostname
-  config.app.hostname = userConfig.app.hostname || defaultAppHostname
+  const envHostname = getCliEnv() === STAGE_ENV ? stageAppHostname : defaultAppHostname
+  config.app.defaultHostname = envHostname
+  config.app.hostname = userConfig.app.hostname || envHostname
+
   // cache control config
   config.app.htmlCacheDuration = userConfig.app.htmlcacheduration || defaultHTMLCacheDuration
   config.app.jsCacheDuration = userConfig.app.jscacheduration || defaultJSCacheDuration

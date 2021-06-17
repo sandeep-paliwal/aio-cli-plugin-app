@@ -18,9 +18,10 @@ const { getToken, context } = require('@adobe/aio-lib-ims')
 const { CLI } = require('@adobe/aio-lib-ims/src/context')
 const fetch = require('node-fetch')
 const chalk = require('chalk')
-const config = require('@adobe/aio-lib-core-config')
+const aioConfig = require('@adobe/aio-lib-core-config')
 const { AIO_CONFIG_WORKSPACE_SERVICES, AIO_CONFIG_ORG_SERVICES } = require('./defaults')
 const { EOL } = require('os')
+const { getCliEnv } = require('@adobe/aio-lib-env')
 
 /** @private */
 function isNpmInstalled () {
@@ -105,12 +106,12 @@ function wrapError (err) {
 
 /** @private */
 async function getCliInfo () {
-  const { env = 'prod' } = await context.getCli() || {}
   await context.setCli({ 'cli.bare-output': true }, false) // set this globally
 
   aioLogger.debug('Retrieving CLI Token')
   const accessToken = await getToken(CLI)
 
+  const env = getCliEnv()
   return { accessToken, env }
 }
 
@@ -288,7 +289,9 @@ function waitFor (t) {
 /** @private */
 async function runOpenWhiskJar (jarFile, runtimeConfigFile, apihost, waitInitTime, waitPeriodTime, timeout, /* istanbul ignore next */ execaOptions = {}) {
   aioLogger.debug(`runOpenWhiskJar - jarFile: ${jarFile} runtimeConfigFile ${runtimeConfigFile} apihost: ${apihost} waitInitTime: ${waitInitTime} waitPeriodTime: ${waitPeriodTime} timeout: ${timeout}`)
-  const proc = execa('java', ['-jar', '-Dwhisk.concurrency-limit.max=10', jarFile, '-m', runtimeConfigFile, '--no-ui', '--disable-color-logging'], execaOptions)
+  const jvmConfig = aioConfig.get('ow.jvm.args')
+  const jvmArgs = jvmConfig ? jvmConfig.split(' ') : []
+  const proc = execa('java', ['-jar', '-Dwhisk.concurrency-limit.max=10', ...jvmArgs, jarFile, '-m', runtimeConfigFile, '--no-ui', '--disable-color-logging'], execaOptions)
 
   const endTime = Date.now() + timeout
   await waitFor(waitInitTime)
@@ -334,7 +337,7 @@ function setWorkspaceServicesConfig (serviceProperties) {
     name: s.name,
     code: s.sdkCode
   }))
-  config.set(AIO_CONFIG_WORKSPACE_SERVICES, serviceConfig, true)
+  aioConfig.set(AIO_CONFIG_WORKSPACE_SERVICES, serviceConfig, true)
   aioLogger.debug(`set aio config ${AIO_CONFIG_WORKSPACE_SERVICES}: ${JSON.stringify(serviceConfig, null, 2)}`)
 }
 
@@ -349,7 +352,7 @@ function setOrgServicesConfig (supportedServices) {
     code: s.code,
     type: s.type
   }))
-  config.set(AIO_CONFIG_ORG_SERVICES, orgServiceConfig, true)
+  aioConfig.set(AIO_CONFIG_ORG_SERVICES, orgServiceConfig, true)
   aioLogger.debug(`set aio config ${AIO_CONFIG_ORG_SERVICES}: ${JSON.stringify(orgServiceConfig, null, 2)}`)
 }
 
