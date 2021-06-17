@@ -22,6 +22,7 @@ const aioConfig = require('@adobe/aio-lib-core-config')
 const { AIO_CONFIG_WORKSPACE_SERVICES, AIO_CONFIG_ORG_SERVICES } = require('./defaults')
 const { EOL } = require('os')
 const { getCliEnv } = require('@adobe/aio-lib-env')
+const yaml = require('js-yaml')
 
 /** @private */
 function isNpmInstalled () {
@@ -35,8 +36,14 @@ function isGitInstalled () {
 }
 
 /** @private */
-async function installPackage (dir) {
+async function installPackages (dir, options = { spinner: null, verbose: false }) {
+  // todo support for ctrl + c handler to "install later"
+
+  if (options.spinner && !options.verbose) {
+    options.spinner.start('Installing packages...')
+  }
   aioLogger.debug(`running npm install : ${dir}`)
+
   if (!(fs.statSync(dir).isDirectory())) {
     aioLogger.debug(`${dir} is not a directory`)
     throw new Error(`${dir} is not a directory`)
@@ -45,48 +52,70 @@ async function installPackage (dir) {
     aioLogger.debug(`${dir} does not contain a package.json file.`)
     throw new Error(`${dir} does not contain a package.json file.`)
   }
+  const execaOptions = { cwd: dir }
+  if (options.verbose) {
+    execaOptions.stderr = 'inherit'
+    execaOptions.stdout = 'inherit'
+  }
   // npm install
-  return execa('npm', ['install'], { cwd: dir })
+  const ret = await execa('npm', ['install'], execaOptions)
+  if (options.spinner && !options.verbose) {
+    options.spinner.stop(chalk.green('Packages installed!'))
+  }
+  return ret
 }
 
 /** @private */
 async function runPackageScript (scriptName, dir, cmdArgs = []) {
-  if (!dir) {
-    dir = process.cwd()
-  }
   aioLogger.debug(`running npm run-script ${scriptName} in dir: ${dir}`)
   const pkg = await fs.readJSON(path.join(dir, 'package.json'))
   if (pkg && pkg.scripts && pkg.scripts[scriptName]) {
-    let command = pkg.scripts[scriptName]
-    if (cmdArgs.length) {
-      command = `${command} ${cmdArgs.join(' ')}`
-    }
-    const child = execa.command(command, {
-      stdio: ['inherit', 'inherit', 'inherit', 'ipc'],
-      shell: true,
-      cwd: dir,
-      preferLocal: true
-    })
-    // handle IPC from possible aio-run-detached script
-    child.on('message', message => {
-      if (message.type === 'long-running-process') {
-        const { pid, logs } = message.data
-        aioLogger.debug(`Found ${scriptName} event hook long running process (pid: ${pid}). Registering for SIGTERM`)
-        aioLogger.debug(`Log locations for ${scriptName} event hook long-running process (stdout: ${logs.stdout} stderr: ${logs.stderr})`)
-        process.on('exit', () => {
-          try {
-            aioLogger.debug(`Killing ${scriptName} event hook long-running process (pid: ${pid})`)
-            process.kill(pid, 'SIGTERM')
-          } catch (_) {
-            // do nothing if pid not found
-          }
-        })
-      }
-    })
+    const command = pkg.scripts[scriptName]
+    const child = runScript(command, dir, cmdArgs)
     return child
   } else {
     aioLogger.debug(`${dir} does not contain a package.json or it does not contain a script named ${scriptName}`)
   }
+}
+
+/**
+ * @param command
+ * @param dir
+ * @param cmdArgs
+ */
+async function runScript (command, dir, cmdArgs = []) {
+  if (!command) {
+    return null
+  }
+  if (!dir) {
+    dir = process.cwd()
+  }
+  const fullCommand = command + cmdArgs && ' ' + cmdArgs.join(' ')
+  aioLogger.debug(`running command '${fullCommand}' in dir: '${dir}'`)
+  // run
+  const child = execa.command(command, {
+    stdio: ['inherit', 'inherit', 'inherit', 'ipc'],
+    shell: true,
+    cwd: dir,
+    preferLocal: true
+  })
+  // handle IPC from possible aio-run-detached script
+  child.on('message', message => {
+    if (message.type === 'long-running-process') {
+      const { pid, logs } = message.data
+      aioLogger.debug(`Found '${fullCommand}' event hook long running process (pid: ${pid}). Registering for SIGTERM`)
+      aioLogger.debug(`Log locations for ${fullCommand} event hook long-running process (stdout: ${logs.stdout} stderr: ${logs.stderr})`)
+      process.on('exit', () => {
+        try {
+          aioLogger.debug(`Killing ${fullCommand} event hook long-running process (pid: ${pid})`)
+          process.kill(pid, 'SIGTERM')
+        } catch (_) {
+          // do nothing if pid not found
+        }
+      })
+    }
+  })
+  return child
 }
 
 /** @private */
@@ -108,10 +137,11 @@ function wrapError (err) {
 async function getCliInfo () {
   await context.setCli({ 'cli.bare-output': true }, false) // set this globally
 
-  aioLogger.debug('Retrieving CLI Token')
+  const env = getCliEnv()
+
+  aioLogger.debug(`Retrieving CLI Token using env=${env}`)
   const accessToken = await getToken(CLI)
 
-  const env = getCliEnv()
   return { accessToken, env }
 }
 
@@ -356,10 +386,90 @@ function setOrgServicesConfig (supportedServices) {
   aioLogger.debug(`set aio config ${AIO_CONFIG_ORG_SERVICES}: ${JSON.stringify(orgServiceConfig, null, 2)}`)
 }
 
+/**
+ * Build extension points payload from configuration all extension configurations
+ *
+ * @param {Array} extConfigs array resulting from BaseCommand.getAppExtConfigs
+ * @returns {object} extension registry payload
+ */
+function buildExtensionPointPayload (extConfigs) {
+  // Example input:
+  // application: {...}
+  // extensions:
+  //   dx/excshell/1:
+  //     operations:
+  //       view:
+  //         impl: index.html
+  //         type: web
+  //   dx/asset-compute/worker/1:
+  //     operations:
+  //       worker:
+  //         impl: aem-nui-v1/ps-worker
+  //         type: action
+  //
+  // Example output:
+  // dx/excshell/1:
+  //  operations:
+  //    view:
+  //      href: https://namespace.adobeio-static.net/index.html # todo support for multi UI with a extname-opcode-subfolder
+  // dx/asset-compute/worker/1:
+  //  operations:
+  //    worker:
+  //      href: https://namespace.adobeioruntime.net/api/v1/web/aem-nui-v1/ps-worker
+
+  const endpointsPayload = {}
+  // iterate over all configuration to deploy
+  Object.entries(extConfigs)
+    // filter out the standalone application config, we want to publish extension points
+    .filter(([k, v]) => k !== 'application')
+    .forEach(([extPointName, extPointConfig]) => {
+      endpointsPayload[extPointName] = {}
+      Object.entries(extPointConfig.operations)
+        .forEach(([opName, opList]) => {
+          // replace operations impl and type with a href, either for an action or for a UI
+          endpointsPayload[extPointName][opName] = opList.map(op => {
+            if (op.type === 'action') {
+              // todo modularize with getActionUrls from appHelper
+              const owPackage = op.impl.split('/')[0]
+              const owAction = op.impl.split('/')[1]
+              const manifestAction = extPointConfig.manifest.full.packages[owPackage].actions[owAction]
+              const webArg = manifestAction['web-export'] || manifestAction.web
+              const webUri = (webArg && webArg !== 'no' && webArg !== 'false') ? 'web' : ''
+              const packageWithAction = op.impl
+              // todo non runtime apihost do not support namespace as subdomain
+              const href = urlJoin('https://' + extPointConfig.ow.namespace + '.' + removeProtocolFromURL(extPointConfig.ow.apihost), 'api', extPointConfig.ow.apiversion, webUri, packageWithAction)
+              return { href, ...op.params }
+            }
+            // op.type === 'web'
+            // todo support for multi UI with a extname-opcode-subfolder
+            return { href: `https://${extPointConfig.ow.namespace}.${extPointConfig.app.hostname}/${op.impl}`, ...op.params }
+          })
+        })
+    })
+  return endpointsPayload
+}
+
+function atLeastOne (input) {
+  if (input.length === 0) {
+    return 'please choose at least one option'
+  }
+  return true
+}
+
+function deleteUserConfig (configData) {
+  const phyConfig = yaml.safeLoad(fs.readFileSync(configData.file))
+  const interKeys = configData.key.split('.')
+  const phyActionConfigParent = interKeys.slice(0, -1).reduce((obj, k) => obj && obj[k], phyConfig)
+  // like delete configFile.runtimeManifest.packages.actions.theaction
+  delete phyActionConfigParent[interKeys.slice(-1)]
+  fs.writeFileSync(configData.file, yaml.safeDump(phyConfig))
+}
+
 module.exports = {
   isNpmInstalled,
   isGitInstalled,
-  installPackage,
+  installPackages,
+  runScript,
   runPackageScript,
   wrapError,
   getCliInfo,
@@ -377,5 +487,8 @@ module.exports = {
   waitForOpenWhiskReadiness,
   warnIfOverwriteServicesInProductionWorkspace,
   setOrgServicesConfig,
-  setWorkspaceServicesConfig
+  setWorkspaceServicesConfig,
+  buildExtensionPointPayload,
+  atLeastOne,
+  deleteUserConfig
 }
