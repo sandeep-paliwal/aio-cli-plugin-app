@@ -182,7 +182,7 @@ function loadUserConfig (commonConfig) {
 function loadUserConfigAppYaml () {
   if (!fs.existsSync(USER_CONFIG_FILE)) {
     // no error, support for legacy configuration
-    return {}
+    return { config: {}, includeIndex: {} }
   }
 
   // this code is traversing app.config.yaml recursively to resolve all $includes directives
@@ -288,11 +288,12 @@ function loadUserConfigLegacy (commonConfig) {
     legacyAppConfig.runtimeManifest = runtimeManifest
     // populate index
     const baseKey = `${APPLICATION_CONFIG_KEY}.runtimeManifest`
+    includeIndex[baseKey] = { file: 'manifest.yml', key: '' }
     const stack = Object.keys(runtimeManifest).map(rtk => ({ key: rtk, parent: runtimeManifest, fullKey: '' }))
     while (stack.length > 0) {
       const { key, parent, fullKey } = stack.pop()
       const newFullKey = fullKey.concat(`.${key}`)
-      includeIndex[baseKey + newFullKey] = { file: 'manifest.yaml', key: newFullKey }
+      includeIndex[baseKey + newFullKey] = { file: 'manifest.yml', key: newFullKey.slice(1) } // remove first dot
       if (typeof parent[key] === 'object') {
         // includes arrays
         stack.push(...Object.keys(parent[key]).map(rtk => ({ key: rtk, parent: parent[key], fullKey: newFullKey })))
@@ -325,6 +326,7 @@ function loadUserConfigLegacy (commonConfig) {
       warn('hooks in \'package.json\' are deprecated. Please move your hooks to \'app.config.yaml\' under the \'hooks\' key')
       legacyAppConfig.hooks = hooks
       // build index
+      includeIndex[`${APPLICATION_CONFIG_KEY}.hooks`] = { file: 'package.json', key: 'scripts' }
       keys.forEach((hk) => {
         const fullKey = `${APPLICATION_CONFIG_KEY}.hooks.${hk}`
         includeIndex[fullKey] = {
@@ -333,6 +335,11 @@ function loadUserConfigLegacy (commonConfig) {
         }
       })
     }
+  }
+
+  if (Object.keys(includeIndex).length > 0) {
+    // add the top key
+    includeIndex[`${APPLICATION_CONFIG_KEY}`] = { file: '.aio', key: 'app' }
   }
 
   return { includeIndex, config: { [APPLICATION_CONFIG_KEY]: legacyAppConfig } }
@@ -366,6 +373,7 @@ function mergeLegacyUserConfig (userConfig, legacyUserConfig) {
     [APPLICATION_CONFIG_KEY]: mergedApp
   }
 }
+
 /** @private */
 function buildAllConfigs (userConfig, commonConfig, includeIndex) {
   return {
@@ -403,8 +411,6 @@ function buildAppConfig (userConfig, commonConfig, includeIndex) {
 
 /** @private */
 function buildSingleConfig (configName, singleUserConfig, commonConfig, includeIndex) {
-  const absRoot = p => path.join(process.cwd(), p)
-
   // used as subfolder folder in dist, converts to a single dir, e.g. dx/excshell/1 =>
   // dx-excshell-1 and dist/dx-excshell-1/actions/action-xyz.zip
   const subFolderName = configName.replace(/\//g, '-')
@@ -427,22 +433,27 @@ function buildSingleConfig (configName, singleUserConfig, commonConfig, includeI
     return config
   }
 
-  const defaultActionPath = pathConfigValueToRelRoot('actions/', fullKeyPrefix, includeIndex) // relative to config file holding parent object
-  const defaultWebPath = pathConfigValueToRelRoot('web-src/', fullKeyPrefix, includeIndex) // relative to config file holding parent object
+  const otherKeyInObject = Object.keys(singleUserConfig)[0]
+  // The default action and web path are relative to the folder holding the config file.
+  // Let's search the config path that defines a key in the same config object level as 'web' or
+  // 'action'
+  const defaultActionPath = pathConfigValueToAbs('actions/', `${fullKeyPrefix}.${otherKeyInObject}`, includeIndex)
+  const defaultWebPath = pathConfigValueToAbs('web-src/', `${fullKeyPrefix}.${otherKeyInObject}`, includeIndex)
   const defaultDistPath = 'dist/' // relative to root
 
-  const actions = pathConfigValueToRelRoot(singleUserConfig.actions, fullKeyPrefix + '.actions', includeIndex) || defaultActionPath
-  const web = pathConfigValueToRelRoot(singleUserConfig.web, fullKeyPrefix + '.web', includeIndex) || defaultWebPath
-  const dist = pathConfigValueToRelRoot(singleUserConfig.dist, fullKeyPrefix + '.dist', includeIndex) || defaultDistPath
+  // absolut paths
+  const actions = pathConfigValueToAbs(singleUserConfig.actions, fullKeyPrefix + '.actions', includeIndex) || defaultActionPath
+  const web = pathConfigValueToAbs(singleUserConfig.web, fullKeyPrefix + '.web', includeIndex) || defaultWebPath
+  const dist = pathConfigValueToAbs(singleUserConfig.dist, fullKeyPrefix + '.dist', includeIndex) || defaultDistPath
 
   const manifest = singleUserConfig.runtimeManifest
 
   config.app.hasBackend = !!manifest
   config.app.hasFrontend = fs.existsSync(web)
-  config.app.dist = absRoot(path.join(dist, dist === defaultDistPath ? subFolderName : ''))
+  config.app.dist = path.resolve(dist, dist === defaultDistPath ? subFolderName : '')
 
   // actions
-  config.actions.src = absRoot(actions)// needed for app add first action
+  config.actions.src = path.resolve(actions) // needed for app add first action
   if (config.app.hasBackend) {
     config.actions.dist = path.join(config.app.dist, 'actions')
     config.manifest = { src: 'manifest.yml' } // even if a legacy config path, it is required for runtime sync
@@ -456,13 +467,13 @@ function buildSingleConfig (configName, singleUserConfig, commonConfig, includeI
   }
 
   // web
-  config.web.src = absRoot(web) // needed for app add first web-assets
+  config.web.src = path.resolve(web) // needed for app add first web-assets
   if (config.app.hasFrontend) {
-    config.web.injectedConfig = absRoot(path.join(web, 'src', 'config.json'))
+    config.web.injectedConfig = path.resolve(path.join(web, 'src', 'config.json'))
     // only add subfolder name if dist is default value
     config.web.distDev = path.join(config.app.dist, 'web-dev')
     config.web.distProd = path.join(config.app.dist, 'web-prod')
-    config.s3.credsCacheFile = absRoot('.aws.tmp.creds.json')
+    config.s3.credsCacheFile = path.resolve('.aws.tmp.creds.json')
     config.s3.folder = commonConfig.ow.namespace
 
     if (singleUserConfig.awsaccesskeyid &&
@@ -505,11 +516,13 @@ function rewriteRuntimeManifestPathsToRelRoot (manifestConfig = {}, fullKeyToMan
     Object.entries(pkg.actions || {}).forEach(([actionName, action]) => {
       const fullKeyToAction = `${fullKeyToManifest}.packages.${pkgName}.actions.${actionName}`
       if (action.function) {
-        action.function = pathConfigValueToRelRoot(action.function, fullKeyToAction + '.function', includeIndex)
+        // absolut path
+        action.function = pathConfigValueToAbs(action.function, fullKeyToAction + '.function', includeIndex)
       }
       if (action.include) {
         action.include.forEach((arr, i) => {
-          action.include[i][0] = pathConfigValueToRelRoot(action.include[i][0], fullKeyToAction + `.include.${i}.0`, includeIndex)
+          // absolut path
+          action.include[i][0] = pathConfigValueToAbs(action.include[i][0], fullKeyToAction + `.include.${i}.0`, includeIndex)
         })
       }
     })
@@ -522,13 +535,16 @@ function rewriteRuntimeManifestPathsToRelRoot (manifestConfig = {}, fullKeyToMan
 // be relative to config files in any subfolder. Config keys that define path values are
 // identified and their value is rewritten relative to the root folder.
 /** @private */
-function pathConfigValueToRelRoot (pathValue, fullKeyToPathValue, includeIndex) {
-  if (!pathValue) {
+function pathConfigValueToAbs (pathValue, fullKeyToPathValue, includeIndex) {
+  const configData = includeIndex[fullKeyToPathValue]
+  if (!pathValue || !configData) {
     return undefined
   }
   // if path value is defined and fullKeyToPathValyue is correct then index has an entry
-  const configPath = includeIndex[fullKeyToPathValue].file
-  return path.join(path.dirname(configPath), pathValue)
+  const configPath = configData.file
+  // path.resolve => support both absolut pathValue and relative (relative joins with
+  // config dir and process.cwd, absolut returns pathValue)
+  return path.resolve(path.dirname(configPath), pathValue)
 }
 
 /** @private */

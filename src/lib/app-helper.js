@@ -387,12 +387,38 @@ function setOrgServicesConfig (supportedServices) {
 }
 
 /**
+ * Gets fresh service list from Console Workspace and builds metadata to be associated with the view operation for dx/excshell/1 extensions
+ *
+ * @param {object} libConsoleCLI an instance of LibConsoleCli to get latest services, the user must be logged in
+ * @param {object} aioConfig loaded aio config
+ * @returns {object} op['view'] metadata OR null
+ */
+async function buildExcShellViewExtensionMetadata (libConsoleCLI, aioConfig) {
+  const serviceProperties = await libConsoleCLI.getServicePropertiesFromWorkspace(
+    aioConfig.project.org.id,
+    aioConfig.project.id,
+    aioConfig.project.workspace
+  )
+  const services = serviceProperties.map(s => ({
+    name: s.name,
+    code: s.sdkCode
+  }))
+  return {
+    services: Object.assign([], services),
+    profile: {
+      client_id: 'firefly-app',
+      scope: 'ab.manage,additional_info.job_function,additional_info.projectedProductContext,additional_info.roles,additional_info,AdobeID,adobeio_api,adobeio.appregistry.read,audiencemanager_api,creative_cloud,mps,openid,read_organizations,read_pc.acp,read_pc.dma_tartan,read_pc,session'
+    }
+  }
+}
+
+/**
  * Build extension points payload from configuration all extension configurations
  *
  * @param {Array} extConfigs array resulting from BaseCommand.getAppExtConfigs
  * @returns {object} extension registry payload
  */
-function buildExtensionPointPayload (extConfigs) {
+function buildExtensionPointPayloadWoMetadata (extConfigs) {
   // Example input:
   // application: {...}
   // extensions:
@@ -408,14 +434,15 @@ function buildExtensionPointPayload (extConfigs) {
   //         type: action
   //
   // Example output:
-  // dx/excshell/1:
-  //  operations:
-  //    view:
-  //      href: https://namespace.adobeio-static.net/index.html # todo support for multi UI with a extname-opcode-subfolder
-  // dx/asset-compute/worker/1:
-  //  operations:
-  //    worker:
-  //      href: https://namespace.adobeioruntime.net/api/v1/web/aem-nui-v1/ps-worker
+  // endpoints:
+  //   dx/excshell/1:
+  //    operations:
+  //      view:
+  //        href: https://namespace.adobeio-static.net/index.html # todo support for multi UI with a extname-opcode-subfolder
+  //   dx/asset-compute/worker/1:
+  //    operations:
+  //      worker:
+  //        href: https://namespace.adobeioruntime.net/api/v1/web/aem-nui-v1/ps-worker
 
   const endpointsPayload = {}
   // iterate over all configuration to deploy
@@ -439,16 +466,24 @@ function buildExtensionPointPayload (extConfigs) {
               // todo non runtime apihost do not support namespace as subdomain
               const href = urlJoin('https://' + extPointConfig.ow.namespace + '.' + removeProtocolFromURL(extPointConfig.ow.apihost), 'api', extPointConfig.ow.apiversion, webUri, packageWithAction)
               return { href, ...op.params }
+            } else if (op.type === 'web') {
+              // todo support for multi UI with a extname-opcode-subfolder
+              return {
+                href: `https://${extPointConfig.ow.namespace}.${extPointConfig.app.hostname}/${op.impl}`,
+                ...op.params
+              }
+            } else {
+              throw new Error(`unexpected op.type encountered => ${op.type}`)
             }
-            // op.type === 'web'
-            // todo support for multi UI with a extname-opcode-subfolder
-            return { href: `https://${extPointConfig.ow.namespace}.${extPointConfig.app.hostname}/${op.impl}`, ...op.params }
           })
         })
     })
-  return endpointsPayload
+  return { endpoints: endpointsPayload }
 }
 
+/**
+ * @param input
+ */
 function atLeastOne (input) {
   if (input.length === 0) {
     return 'please choose at least one option'
@@ -456,6 +491,9 @@ function atLeastOne (input) {
   return true
 }
 
+/**
+ * @param configData
+ */
 function deleteUserConfig (configData) {
   const phyConfig = yaml.safeLoad(fs.readFileSync(configData.file))
   const interKeys = configData.key.split('.')
@@ -488,7 +526,8 @@ module.exports = {
   warnIfOverwriteServicesInProductionWorkspace,
   setOrgServicesConfig,
   setWorkspaceServicesConfig,
-  buildExtensionPointPayload,
+  buildExtensionPointPayloadWoMetadata,
+  buildExcShellViewExtensionMetadata,
   atLeastOne,
   deleteUserConfig
 }

@@ -18,12 +18,11 @@ class Info extends BaseCommand {
   async run () {
     // cli input
     const { flags } = this.parse(Info)
-    const appConfig = this.getFullConfig()
+    const appConfig = this.getFullConfig({ allowNoImpl: true })
     // includes .env secret delete all aio config for now
     delete appConfig.aio
     // remove noisy configs
     delete appConfig.includeIndex
-    delete appConfig.cli
 
     // hide credentials
     Object.values(appConfig.all).forEach(config => {

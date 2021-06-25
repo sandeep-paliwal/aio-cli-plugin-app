@@ -19,7 +19,7 @@ const BaseCommand = require('../../BaseCommand')
 const BuildCommand = require('./build')
 const webLib = require('@adobe/aio-lib-web')
 const { flags } = require('@oclif/command')
-const { runScript, buildExtensionPointPayload } = require('../../lib/app-helper')
+const { runScript, buildExtensionPointPayloadWoMetadata, buildExcShellViewExtensionMetadata } = require('../../lib/app-helper')
 const rtLib = require('@adobe/aio-lib-runtime')
 
 class Deploy extends BuildCommand {
@@ -65,7 +65,8 @@ class Deploy extends BuildCommand {
       // 2. deploy extension manifest
       if (flags.publish && !(keys.length === 1 && keys[0] === 'application')) {
         const aioConfig = this.getFullConfig().aio
-        await this.publishExtensionPoints(libConsoleCLI, deployConfigs, aioConfig, flags)
+        const payload = await this.publishExtensionPoints(libConsoleCLI, deployConfigs, aioConfig, flags)
+        this.log(chalk.blue(chalk.bold(`New Extension Point(s) in Workspace '${aioConfig.project.workspace.name}': '${Object.keys(payload.endpoints)}'`)))
       } else {
         this.log('skipping publish phase...')
       }
@@ -112,7 +113,7 @@ class Deploy extends BuildCommand {
           if (filterActions) {
             filterEntities = { actions: filterActions }
           }
-          const message = `Deploying actions '${name}'`
+          const message = `Deploying actions for '${name}'`
           spinner.start(message)
           try {
             const script = await runScript(config.hooks['deploy-actions'])
@@ -131,7 +132,7 @@ class Deploy extends BuildCommand {
 
       if (flags['web-assets']) {
         if (config.app.hasFrontend) {
-          const message = `Deploying web assets '${name}'`
+          const message = `Deploying web assets for '${name}'`
           spinner.start(message)
           try {
             const script = await runScript(config.hooks['deploy-static'])
@@ -155,7 +156,7 @@ class Deploy extends BuildCommand {
           this.log(chalk.blue(chalk.bold(`  -> ${a.url || a.name} `)))
         })
       }
-      // TODO urls should depend on extension point, exc shell only for exc shell extension point
+      // TODO urls should depend on extension point, exc shell only for exc shell extension point - use a post-app-deploy hook ?
       if (deployedFrontendUrl) {
         this.log(chalk.blue(chalk.bold(`To view your deployed application:\n  -> ${deployedFrontendUrl}`)))
         const launchUrl = this.getLaunchUrlPrefix() + deployedFrontendUrl
@@ -176,13 +177,20 @@ class Deploy extends BuildCommand {
   }
 
   async publishExtensionPoints (libConsoleCLI, deployConfigs, aioConfig, flags) {
-    const payload = buildExtensionPointPayload(deployConfigs)
+    const payload = buildExtensionPointPayloadWoMetadata(deployConfigs)
+    // build metadata
+    if (payload.endpoints['dx/excshell/1'] && payload.endpoints['dx/excshell/1'].view) {
+      const metadata = await buildExcShellViewExtensionMetadata(libConsoleCLI, aioConfig)
+      payload.endpoints['dx/excshell/1'].view[0].metadata = metadata
+    }
+    let newPayload
     if (flags['force-publish']) {
       // publish and overwrite any previous published endpoints (delete them)
-      await libConsoleCLI.updateExtensionPoints(aioConfig.project.org, aioConfig.project, aioConfig.project.workspace, payload)
+      newPayload = await libConsoleCLI.updateExtensionPoints(aioConfig.project.org, aioConfig.project, aioConfig.project.workspace, payload)
     }
     // publish without overwritting, meaning partial publish (for a subset of ext points) are supported
-    await libConsoleCLI.updateExtensionPointsWithoutOverwrites(aioConfig.project.org, aioConfig.project, aioConfig.project.workspace, payload)
+    newPayload = await libConsoleCLI.updateExtensionPointsWithoutOverwrites(aioConfig.project.org, aioConfig.project, aioConfig.project.workspace, payload)
+    return newPayload
   }
 }
 
