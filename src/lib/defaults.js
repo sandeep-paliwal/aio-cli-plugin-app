@@ -36,18 +36,14 @@ module.exports = {
   INCLUDE_DIRECTIVE: '$include',
   APPLICATION_CONFIG_KEY: 'application',
   EXTENSIONS_CONFIG_KEY: 'extensions',
-  implPromptChoices: [
-    // we abuse the extension command to also let users add a standalone app
-    {
-      name: 'Standalone Application',
-      value: {
-        name: 'application',
-        generator: generators.application,
-        requiredServices: [] // TODO required services should be filled based on selected actions
-      }
-    },
-    // extensions
-    // TODO this list should not be hardcoded but fetched from xt reg
+  EXTENSION_POINT_LIST: [ // Extension point list for easy access to all supported extension points
+    'dx/excshell/1',
+    'dx/asset-compute/worker/1'
+  ],
+
+  // we still need some details for extensions, we add them to the promt choices later
+  extensionDefaults: {
+    'dx/excshell/1':
     {
       name: 'Firefly Experience Cloud Shell',
       value: {
@@ -56,12 +52,23 @@ module.exports = {
         requiredServices: []
       }
     },
-    {
+    'dx/asset-compute/worker/1': {
       name: 'DX Asset Compute Worker v1',
       value: {
         name: 'dx/asset-compute/worker/1',
         generator: generators.extensions['dx/asset-compute/worker/1'],
         requiredServices: ['AssetComputeSDK']
+      }
+    }
+  },
+  implPromptChoices: [
+    // we abuse the extension command to also let users add a standalone app
+    {
+      name: 'Standalone Application',
+      value: {
+        name: 'application',
+        generator: generators.application,
+        requiredServices: [] // TODO required services should be filled based on selected actions
       }
     }
   ]
