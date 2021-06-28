@@ -69,7 +69,7 @@ ListExtensionPointsCommand.flags = {
   })
 }
 
-ListExtensionPointsCommand.aliases = ['app:list:ext', 'app:list:extensions']
+ListExtensionPointsCommand.aliases = ['app:list:ext-points', 'app:list:extension-points']
 ListExtensionPointsCommand.args = []
 
 module.exports = ListExtensionPointsCommand
